@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">NavViewBrightness</string>
+    <string name="app_xposed_description_xp">Adjust brightness using NavStubView</string>
+</resources>
