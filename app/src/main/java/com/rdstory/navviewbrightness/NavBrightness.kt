@@ -26,6 +26,9 @@ class NavBrightness(private val navView: View) {
     private val touchSlop = ViewConfiguration.get(navView.context).scaledTouchSlop
     private var trackingTouch: Boolean? = null
     private var initX = 0f
+    private var initY = 0f
+    private var lastX = 0f
+    private var lastY = 0f
     private var initBrightness = 0
     private var initTime = 0L
     private val handler = object : Handler(Looper.getMainLooper()) {
@@ -55,8 +58,10 @@ class NavBrightness(private val navView: View) {
             if (mode == SCREEN_BRIGHTNESS_MODE_AUTOMATIC) {
                 trackingTouch = false
             } else {
-                initBrightness = getInt(resolver, SCREEN_BRIGHTNESS)
                 trackingTouch = true
+                initX = lastX
+                initY = lastY
+                initBrightness = getInt(resolver, SCREEN_BRIGHTNESS)
                 navView.performHapticFeedback(HapticFeedbackConstants.GESTURE_START)
                 Log.d(TAG, "start tracking brightness gesture")
             }
@@ -73,18 +78,26 @@ class NavBrightness(private val navView: View) {
             MotionEvent.ACTION_DOWN -> {
                 trackingTouch = null
                 initX = event.x
+                initY = event.y
+                lastX = initX
+                lastY = initY
                 initBrightness = 0
                 initTime = SystemClock.uptimeMillis()
                 clearMessages()
                 handler.sendEmptyMessageDelayed(MSG_CHECK_START_TRACKING, ACTIVE_TIMEOUT)
             }
             MotionEvent.ACTION_MOVE -> {
-                val deltaX = event.x - initX
-                if (trackingTouch == null && abs(deltaX) >= touchSlop) {
+                lastX = event.x
+                lastY = event.y
+                if (trackingTouch == true && abs(event.y - initY) >= 8 * touchSlop) {
+                    trackingTouch = false
+                } else if (trackingTouch == null && abs(event.y - initY) >= touchSlop) {
+                    trackingTouch = false
+                } else if (trackingTouch == null && abs(event.x - initX) >= touchSlop) {
                     checkStartTracking()
                 }
                 if (trackingTouch == true) {
-                    val adj = deltaX / (navView.width * 0.8f)
+                    val adj = (event.x - initX) / (navView.width * 0.88f)
                     handler.obtainMessage(MSG_ADJUST_BRIGHTNESS, adj).sendToTarget()
                 }
             }
