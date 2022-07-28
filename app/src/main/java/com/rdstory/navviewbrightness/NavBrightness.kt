@@ -1,19 +1,21 @@
 package com.rdstory.navviewbrightness
 
+import android.content.res.Resources
+import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
 import android.os.SystemClock
 import android.provider.Settings.System.*
 import android.util.Log
-import android.view.HapticFeedbackConstants
-import android.view.MotionEvent
-import android.view.View
-import android.view.ViewConfiguration
+import android.util.TypedValue
+import android.view.*
+import android.widget.FrameLayout
+import android.widget.TextView
 import de.robv.android.xposed.XposedHelpers
 import kotlin.math.abs
 
-class NavBrightness(private val navView: View) {
+class NavBrightness(private val navView: FrameLayout) {
     companion object {
         const val TAG = "NavBrightness"
         private const val ACTIVE_TIMEOUT = 500L
@@ -21,8 +23,28 @@ class NavBrightness(private val navView: View) {
         private const val MSG_CHECK_START_TRACKING = 2
         private const val MAX_BRIGHTNESS = 2047
         private const val MIN_BRIGHTNESS = 8
+        val Int.dpToPx get() = (this * Resources.getSystem().displayMetrics.density).toInt()
+
+        fun Int.setAlpha(alpha: Int): Int {
+            return Color.argb(alpha, Color.red(this), Color.green(this), Color.blue(this))
+        }
     }
 
+    private val brightnessValueView = TextView(navView.context).apply {
+        visibility = View.GONE
+        gravity = Gravity.CENTER
+        setPaddingRelative(2.dpToPx, 1.dpToPx, 2.dpToPx, 1.dpToPx)
+        minWidth = 40.dpToPx
+        setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
+        setBackgroundColor(Color.BLACK.setAlpha(0x33))
+        setTextColor(Color.WHITE.setAlpha(0xee))
+        navView.addView(
+            this,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        )
+        (layoutParams as FrameLayout.LayoutParams).gravity = Gravity.CENTER
+    }
     private val touchSlop = ViewConfiguration.get(navView.context).scaledTouchSlop
     private var trackingTouch: Boolean? = null
     private var initX = 0f
@@ -39,7 +61,12 @@ class NavBrightness(private val navView: View) {
                     val adj = (msg.obj as Float).coerceIn(-1f, 1f)
                     val newBrightness = (initBrightness + (MAX_BRIGHTNESS - MIN_BRIGHTNESS) * adj)
                         .toInt().coerceIn(MIN_BRIGHTNESS, MAX_BRIGHTNESS)
+                    if (newBrightness == MIN_BRIGHTNESS || newBrightness == MAX_BRIGHTNESS) {
+                        initX = lastX
+                        initBrightness = newBrightness
+                    }
                     putInt(resolver, SCREEN_BRIGHTNESS, newBrightness)
+                    brightnessValueView.text = newBrightness.toString()
                 }
                 MSG_CHECK_START_TRACKING -> checkStartTracking()
             }
@@ -62,6 +89,8 @@ class NavBrightness(private val navView: View) {
                 initX = lastX
                 initY = lastY
                 initBrightness = getInt(resolver, SCREEN_BRIGHTNESS)
+                brightnessValueView.visibility = View.VISIBLE
+                brightnessValueView.text = initBrightness.toString()
                 navView.performHapticFeedback(HapticFeedbackConstants.GESTURE_START)
                 Log.d(TAG, "start tracking brightness gesture")
             }
@@ -89,9 +118,7 @@ class NavBrightness(private val navView: View) {
             MotionEvent.ACTION_MOVE -> {
                 lastX = event.x
                 lastY = event.y
-                if (trackingTouch == true && abs(event.y - initY) >= 8 * touchSlop) {
-                    trackingTouch = false
-                } else if (trackingTouch == null && abs(event.y - initY) >= touchSlop) {
+                if (trackingTouch == null && abs(event.y - initY) >= touchSlop) {
                     trackingTouch = false
                 } else if (trackingTouch == null && abs(event.x - initX) >= touchSlop) {
                     checkStartTracking()
@@ -101,7 +128,10 @@ class NavBrightness(private val navView: View) {
                     handler.obtainMessage(MSG_ADJUST_BRIGHTNESS, adj).sendToTarget()
                 }
             }
-            MotionEvent.ACTION_UP -> clearMessages()
+            MotionEvent.ACTION_UP -> {
+                clearMessages()
+                brightnessValueView.visibility = View.GONE
+            }
         }
         return false
     }
