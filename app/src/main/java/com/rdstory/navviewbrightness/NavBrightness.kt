@@ -13,7 +13,8 @@ import android.view.*
 import android.widget.FrameLayout
 import android.widget.TextView
 import de.robv.android.xposed.XposedHelpers
-import kotlin.math.abs
+import kotlin.collections.ArrayDeque
+import kotlin.math.*
 
 class NavBrightness(private val navView: FrameLayout) {
     companion object {
@@ -21,8 +22,8 @@ class NavBrightness(private val navView: FrameLayout) {
         private const val ACTIVE_TIMEOUT = 500L
         private const val MSG_ADJUST_BRIGHTNESS = 1
         private const val MSG_CHECK_START_TRACKING = 2
-        private const val MAX_BRIGHTNESS = 2047
-        private const val MIN_BRIGHTNESS = 8
+        private const val MAX_BRIGHTNESS = 2047f
+        private const val MIN_BRIGHTNESS = 8f
         val Int.dpToPx get() = (this * Resources.getSystem().displayMetrics.density).toInt()
 
         fun Int.setAlpha(alpha: Int): Int {
@@ -51,22 +52,24 @@ class NavBrightness(private val navView: FrameLayout) {
     private var initY = 0f
     private var lastX = 0f
     private var lastY = 0f
-    private var initBrightness = 0
+    private var lastBrightness = 0f
     private var initTime = 0L
+    private val speedTracker = SpeedTracker()
     private val handler = object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 MSG_ADJUST_BRIGHTNESS -> {
                     val resolver = navView.context.contentResolver
                     val adj = (msg.obj as Float).coerceIn(-1f, 1f)
-                    val newBrightness = (initBrightness + (MAX_BRIGHTNESS - MIN_BRIGHTNESS) * adj)
-                        .toInt().coerceIn(MIN_BRIGHTNESS, MAX_BRIGHTNESS)
-                    if (newBrightness == MIN_BRIGHTNESS || newBrightness == MAX_BRIGHTNESS) {
-                        initX = lastX
-                        initBrightness = newBrightness
+                    val newBrightness = (lastBrightness + (MAX_BRIGHTNESS - MIN_BRIGHTNESS) * adj)
+                        .coerceIn(MIN_BRIGHTNESS, MAX_BRIGHTNESS)
+                    val lastBrightnessInt = lastBrightness.roundToInt()
+                    val newBrightnessInt = newBrightness.roundToInt()
+                    lastBrightness = newBrightness
+                    if (lastBrightnessInt != newBrightnessInt) {
+                        putInt(resolver, SCREEN_BRIGHTNESS, newBrightnessInt)
+                        brightnessValueView.text = newBrightnessInt.toString()
                     }
-                    putInt(resolver, SCREEN_BRIGHTNESS, newBrightness)
-                    brightnessValueView.text = newBrightness.toString()
                 }
                 MSG_CHECK_START_TRACKING -> checkStartTracking()
             }
@@ -86,11 +89,9 @@ class NavBrightness(private val navView: FrameLayout) {
                 trackingTouch = false
             } else {
                 trackingTouch = true
-                initX = lastX
-                initY = lastY
-                initBrightness = getInt(resolver, SCREEN_BRIGHTNESS)
+                lastBrightness = getInt(resolver, SCREEN_BRIGHTNESS).toFloat()
                 brightnessValueView.visibility = View.VISIBLE
-                brightnessValueView.text = initBrightness.toString()
+                brightnessValueView.text = lastBrightness.roundToInt().toString()
                 navView.performHapticFeedback(HapticFeedbackConstants.GESTURE_START)
                 Log.d(TAG, "start tracking brightness gesture")
             }
@@ -110,30 +111,104 @@ class NavBrightness(private val navView: FrameLayout) {
                 initY = event.y
                 lastX = initX
                 lastY = initY
-                initBrightness = 0
+                lastBrightness = 0f
                 initTime = SystemClock.uptimeMillis()
                 clearMessages()
+                speedTracker.reset()
                 handler.sendEmptyMessageDelayed(MSG_CHECK_START_TRACKING, ACTIVE_TIMEOUT)
             }
             MotionEvent.ACTION_MOVE -> {
-                lastX = event.x
-                lastY = event.y
                 if (trackingTouch == null && abs(event.y - initY) >= touchSlop) {
                     trackingTouch = false
                 } else if (trackingTouch == null && abs(event.x - initX) >= touchSlop) {
                     checkStartTracking()
                 }
                 if (trackingTouch == true) {
-                    val adj = (event.x - initX) / (navView.width * 0.88f)
+                    speedTracker.addMotionEvent(event)
+                    val speedXScale = speedTracker.getNormalizedSpeedX().coerceIn(0.2f, 5f)
+                    val adj = (event.x - lastX) / navView.width * speedXScale
                     handler.obtainMessage(MSG_ADJUST_BRIGHTNESS, adj).sendToTarget()
                 }
+                lastX = event.x
+                lastY = event.y
             }
             MotionEvent.ACTION_UP -> {
                 clearMessages()
+                speedTracker.reset()
                 brightnessValueView.visibility = View.GONE
             }
         }
         return false
     }
 
+    private class SpeedTracker {
+        companion object {
+            const val TRACK_TIME = 300
+            const val NORMALIZE_FACTOR = 0.8f
+            const val POOL_SIZE = TRACK_TIME / 8
+        }
+
+        class MotionPoint {
+            var x = 0f
+            var y = 0f
+            var time = 0L
+        }
+
+        private val recyclePool = ArrayDeque<MotionPoint>()
+        private val pointList = ArrayDeque<MotionPoint>()
+
+        fun addMotionEvent(event: MotionEvent) {
+            pointList.addLast((recyclePool.removeLastOrNull() ?: MotionPoint()).apply {
+                x = event.x
+                y = event.y
+                time = event.eventTime
+            })
+        }
+
+        fun getNormalizedSpeedX(): Float {
+            return getSpeedX() / NORMALIZE_FACTOR
+        }
+
+        fun getSpeedX(): Float {
+            val now = SystemClock.uptimeMillis()
+            var startIndex = -1
+            var endIndex = -1
+            var distance = 0f
+            pointList.forEachIndexed { index, point ->
+                if (now - point.time > TRACK_TIME) {
+                    startIndex = index + 1
+                    return@forEachIndexed
+                }
+                if (startIndex < 0) {
+                    startIndex = index
+                }
+                val nextInfo = pointList.getOrNull(index + 1) ?: let {
+                    endIndex = index
+                    return@forEachIndexed
+                }
+                distance += (nextInfo.x - point.x).absoluteValue
+            }
+            val startPoint = pointList.getOrNull(startIndex)
+            val endPoint = pointList.getOrNull(endIndex)
+            if (startIndex > 0) {
+                reset(startIndex)
+            }
+            if (startPoint == null || endPoint == null || startPoint == endPoint) {
+                return 0f
+            }
+            return distance / (endPoint.time - startPoint.time).coerceAtLeast(1)
+        }
+
+        fun reset(clearSize: Int = pointList.size) {
+            for (i in 0 until clearSize) {
+                val point = pointList.removeFirstOrNull() ?: continue
+                if (recyclePool.size < POOL_SIZE) {
+                    point.x = 0f
+                    point.y = 0f
+                    point.time = 0L
+                    recyclePool.addLast(point)
+                }
+            }
+        }
+    }
 }
