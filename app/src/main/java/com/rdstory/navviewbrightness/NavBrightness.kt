@@ -1,22 +1,20 @@
 package com.rdstory.navviewbrightness
 
-import android.content.Context
-import android.content.res.Resources
-import android.graphics.Color
-import android.graphics.drawable.ClipDrawable
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.LayerDrawable
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
 import android.os.SystemClock
 import android.provider.Settings.System.*
 import android.util.Log
-import android.view.*
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
+import android.view.ViewConfiguration
 import android.widget.FrameLayout
-import android.widget.ProgressBar
 import de.robv.android.xposed.XposedHelpers
-import kotlin.math.*
+import kotlin.math.abs
+import kotlin.math.absoluteValue
+import kotlin.math.roundToInt
+
 
 class NavBrightness(private val navView: FrameLayout) {
     companion object {
@@ -26,18 +24,8 @@ class NavBrightness(private val navView: FrameLayout) {
         private const val MSG_CHECK_START_TRACKING = 2
         private const val MAX_BRIGHTNESS = 4095f
         private const val MIN_BRIGHTNESS = 1f
-        val Int.dpToPx get() = (this * Resources.getSystem().displayMetrics.density).toInt()
     }
 
-    private val progressView = ProgressView(navView.context).apply {
-        visibility = View.GONE
-        navView.addView(
-            this,
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            8.dpToPx
-        )
-        (layoutParams as FrameLayout.LayoutParams).gravity = Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM
-    }
     private val touchSlop = ViewConfiguration.get(navView.context).scaledTouchSlop
     private var trackingTouch: Boolean? = null
     private var initX = 0f
@@ -60,7 +48,6 @@ class NavBrightness(private val navView: FrameLayout) {
                     lastBrightness = newBrightness
                     if (lastBrightnessInt != newBrightnessInt) {
                         putInt(resolver, SCREEN_BRIGHTNESS, newBrightnessInt)
-                        progressView.setBrightness(newBrightness)
                     }
                 }
                 MSG_CHECK_START_TRACKING -> checkStartTracking()
@@ -82,8 +69,6 @@ class NavBrightness(private val navView: FrameLayout) {
             } else {
                 trackingTouch = true
                 lastBrightness = getInt(resolver, SCREEN_BRIGHTNESS).toFloat()
-                progressView.visibility = View.VISIBLE
-                progressView.setBrightness(lastBrightness)
                 navView.performHapticFeedback(HapticFeedbackConstants.GESTURE_START)
                 Log.d(TAG, "start tracking brightness gesture")
             }
@@ -127,7 +112,6 @@ class NavBrightness(private val navView: FrameLayout) {
             MotionEvent.ACTION_UP -> {
                 clearMessages()
                 speedTracker.reset()
-                progressView.visibility = View.GONE
             }
         }
         return false
@@ -201,37 +185,6 @@ class NavBrightness(private val navView: FrameLayout) {
                     recyclePool.addLast(point)
                 }
             }
-        }
-    }
-
-    private class ProgressView(context: Context) :
-        ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal) {
-        init {
-            progressDrawable = LayerDrawable(
-                arrayOf(
-                    GradientDrawable().also {
-                        it.shape = GradientDrawable.RECTANGLE
-                        it.setColor(Color.LTGRAY)
-                        it.setStroke(1.dpToPx, Color.DKGRAY)
-                    },
-                    ClipDrawable(GradientDrawable().also {
-                        it.shape = GradientDrawable.RECTANGLE
-                        it.setColor(Color.WHITE)
-                        it.setStroke(2.dpToPx, Color.TRANSPARENT)
-                    }, Gravity.START, ClipDrawable.HORIZONTAL)
-                )
-            ).also {
-                it.setId(0, android.R.id.background)
-                it.setId(1, android.R.id.progress)
-            }
-            max = 65535
-            min = 0
-            progress = min
-        }
-
-        fun setBrightness(brightness: Float) {
-            progress = BrightnessUtils
-                .convertLinearToGammaFloat(brightness, MIN_BRIGHTNESS, MAX_BRIGHTNESS)
         }
     }
 }
