@@ -1,6 +1,5 @@
 package com.rdstory.navviewbrightness
 
-import android.annotation.SuppressLint
 import android.widget.FrameLayout
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XC_MethodHook
@@ -14,23 +13,16 @@ class Hook : IXposedHookLoadPackage {
         if (lpparam.packageName != "com.miui.home") {
             return
         }
+        // hook miui home NavStubView constructor
         XposedHelpers.findClass(
             "com.miui.home.recents.NavStubView",
             lpparam.classLoader
         ).declaredConstructors.reduce { acc, constructor ->
-            if (acc.parameterCount > constructor.parameterCount) {
-                return@reduce acc
-            }
-            return@reduce constructor
+            if (acc.parameterCount > constructor.parameterCount) acc else constructor
         }.let { constructor ->
             XposedBridge.hookMethod(constructor, object : XC_MethodHook() {
-                @SuppressLint("ClickableViewAccessibility")
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    val navView = param.thisObject as FrameLayout
-                    val navBrightness = NavBrightness(navView)
-                    navView.setOnTouchListener { _, event ->
-                        return@setOnTouchListener navBrightness.onTouchEvent(event)
-                    }
+                    NavBrightness(param.thisObject as FrameLayout)
                 }
             })
         }

@@ -1,5 +1,6 @@
 package com.rdstory.navviewbrightness
 
+import android.annotation.SuppressLint
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
@@ -15,7 +16,11 @@ import kotlin.math.abs
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
 
-
+/**
+ * Control brightness using MIUIHome app's NavStubView that located at the bottom of the screen.
+ * Long press NavStubView and then move left or right to change brightness.
+ */
+@SuppressLint("ClickableViewAccessibility")
 class NavBrightness(private val navView: FrameLayout) {
     companion object {
         const val TAG = "NavBrightness"
@@ -55,18 +60,30 @@ class NavBrightness(private val navView: FrameLayout) {
         }
     }
 
+    init {
+        // register touch listener to detect gesture
+        navView.setOnTouchListener { _, event ->
+            return@setOnTouchListener onTouchEvent(event)
+        }
+    }
+
     private fun checkStartTracking() {
         if (trackingTouch != null) {
             return
         }
         if (SystemClock.uptimeMillis() - initTime < ACTIVE_TIMEOUT) {
+            // user moved too soon, abort gesture detection
             trackingTouch = false
         } else if (XposedHelpers.getObjectField(navView, "mDownEvent") == null) {
+            // A null mDownEvent means that NavStubView is not consuming touch event,
+            // we don't want to break NavStubView's original functionality
             val resolver = navView.context.contentResolver
             val mode = getInt(resolver, SCREEN_BRIGHTNESS_MODE)
             if (mode == SCREEN_BRIGHTNESS_MODE_AUTOMATIC) {
+                // unable to adjust auto brightness yet
                 trackingTouch = false
             } else {
+                // start tracking gesture
                 trackingTouch = true
                 lastBrightness = getInt(resolver, SCREEN_BRIGHTNESS).toFloat()
                 navView.performHapticFeedback(HapticFeedbackConstants.GESTURE_START)
@@ -80,7 +97,7 @@ class NavBrightness(private val navView: FrameLayout) {
         handler.removeMessages(MSG_CHECK_START_TRACKING)
     }
 
-    fun onTouchEvent(event: MotionEvent): Boolean {
+    private fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
                 trackingTouch = null
@@ -102,6 +119,7 @@ class NavBrightness(private val navView: FrameLayout) {
                 }
                 if (trackingTouch == true) {
                     speedTracker.addMotionEvent(event)
+                    // calculate adjustment value, increase or decrease according to moving speed
                     val speedXScale = speedTracker.getNormalizedSpeedX().coerceIn(0.2f, 5f)
                     val adj = (event.x - lastX) / navView.width * speedXScale
                     handler.obtainMessage(MSG_ADJUST_BRIGHTNESS, adj).sendToTarget()
@@ -117,6 +135,9 @@ class NavBrightness(private val navView: FrameLayout) {
         return false
     }
 
+    /**
+     * Simple moving speed tracker
+     */
     private class SpeedTracker {
         companion object {
             const val TRACK_TIME = 300
@@ -150,8 +171,10 @@ class NavBrightness(private val navView: FrameLayout) {
             var startIndex = -1
             var endIndex = -1
             var distance = 0f
+            // calculate recent moving distance
             pointList.forEachIndexed { index, point ->
                 if (now - point.time > TRACK_TIME) {
+                    // skip expired events
                     startIndex = index + 1
                     return@forEachIndexed
                 }
@@ -167,11 +190,13 @@ class NavBrightness(private val navView: FrameLayout) {
             val startPoint = pointList.getOrNull(startIndex)
             val endPoint = pointList.getOrNull(endIndex)
             if (startIndex > 0) {
+                // remove expired events
                 reset(startIndex)
             }
             if (startPoint == null || endPoint == null || startPoint == endPoint) {
                 return 0f
             }
+            // calculate speed
             return distance / (endPoint.time - startPoint.time).coerceAtLeast(1)
         }
 
