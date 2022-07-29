@@ -10,8 +10,8 @@ android {
         applicationId "com.rdstory.navviewbrightness"
         minSdk 30
         targetSdk 32
-        versionCode 1
-        versionName "1.0"
+        versionCode 1000
+        versionName "1.0.0"
         resourceConfigurations += ['zh-rCN']
     }
 
