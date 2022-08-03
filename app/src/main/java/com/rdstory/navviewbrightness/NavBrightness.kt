@@ -24,11 +24,13 @@ import kotlin.math.roundToInt
 class NavBrightness(private val navView: FrameLayout) {
     companion object {
         const val TAG = "NavBrightness"
-        private const val ACTIVE_TIMEOUT = 500L
         private const val MSG_ADJUST_BRIGHTNESS = 1
         private const val MSG_CHECK_START_TRACKING = 2
+        private const val MSG_TOGGLE_AUTO_BRIGHTNESS = 3
+        private const val ACTIVE_TIMEOUT = 500L
         private const val MAX_BRIGHTNESS = 4095f
         private const val MIN_BRIGHTNESS = 1f
+        private const val TOGGLE_AUTO_BRIGHTNESS_SPEED = 2f
     }
 
     private val touchSlop = ViewConfiguration.get(navView.context).scaledTouchSlop
@@ -38,13 +40,17 @@ class NavBrightness(private val navView: FrameLayout) {
     private var lastX = 0f
     private var lastY = 0f
     private var lastBrightness = 0f
+    private var brightnessMode: Int? = null
     private var initTime = 0L
     private val speedTracker = SpeedTracker()
     private val handler = object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
             when (msg.what) {
-                MSG_ADJUST_BRIGHTNESS -> {
-                    val resolver = navView.context.contentResolver
+                MSG_ADJUST_BRIGHTNESS -> run {
+                    if (brightnessMode != SCREEN_BRIGHTNESS_MODE_MANUAL) {
+                        // unable to adjust auto brightness yet
+                        return@run
+                    }
                     val adj = (msg.obj as Float).coerceIn(-1f, 1f)
                     val newBrightness = (lastBrightness + (MAX_BRIGHTNESS - MIN_BRIGHTNESS) * adj)
                         .coerceIn(MIN_BRIGHTNESS, MAX_BRIGHTNESS)
@@ -52,10 +58,23 @@ class NavBrightness(private val navView: FrameLayout) {
                     val newBrightnessInt = newBrightness.roundToInt()
                     lastBrightness = newBrightness
                     if (lastBrightnessInt != newBrightnessInt) {
+                        val resolver = navView.context.contentResolver
                         putInt(resolver, SCREEN_BRIGHTNESS, newBrightnessInt)
                     }
                 }
                 MSG_CHECK_START_TRACKING -> checkStartTracking()
+                MSG_TOGGLE_AUTO_BRIGHTNESS -> {
+                    val resolver = navView.context.contentResolver
+                    val mode = getInt(resolver, SCREEN_BRIGHTNESS_MODE)
+                    val newMode = if (mode == SCREEN_BRIGHTNESS_MODE_AUTOMATIC)
+                        SCREEN_BRIGHTNESS_MODE_MANUAL else SCREEN_BRIGHTNESS_MODE_AUTOMATIC
+                    putInt(resolver, SCREEN_BRIGHTNESS_MODE, newMode)
+                    for (i in 0..newMode) {
+                        navView.postDelayed({
+                            navView.performHapticFeedback(HapticFeedbackConstants.GESTURE_END)
+                        }, 150L * (i + 1))
+                    }
+                }
             }
         }
     }
@@ -78,23 +97,18 @@ class NavBrightness(private val navView: FrameLayout) {
             // A null mDownEvent means that NavStubView is not consuming touch event,
             // we don't want to break NavStubView's original functionality
             val resolver = navView.context.contentResolver
-            val mode = getInt(resolver, SCREEN_BRIGHTNESS_MODE)
-            if (mode == SCREEN_BRIGHTNESS_MODE_AUTOMATIC) {
-                // unable to adjust auto brightness yet
-                trackingTouch = false
-            } else {
-                // start tracking gesture
-                trackingTouch = true
-                lastBrightness = getInt(resolver, SCREEN_BRIGHTNESS).toFloat()
-                navView.performHapticFeedback(HapticFeedbackConstants.GESTURE_START)
-                Log.d(TAG, "start tracking brightness gesture")
-            }
+            trackingTouch = true
+            brightnessMode = getInt(resolver, SCREEN_BRIGHTNESS_MODE)
+            lastBrightness = getInt(resolver, SCREEN_BRIGHTNESS).toFloat()
+            navView.performHapticFeedback(HapticFeedbackConstants.GESTURE_START)
+            Log.d(TAG, "start tracking brightness gesture")
         }
     }
 
     private fun clearMessages() {
         handler.removeMessages(MSG_ADJUST_BRIGHTNESS)
         handler.removeMessages(MSG_CHECK_START_TRACKING)
+        handler.removeMessages(MSG_TOGGLE_AUTO_BRIGHTNESS)
     }
 
     private fun onTouchEvent(event: MotionEvent): Boolean {
@@ -129,6 +143,13 @@ class NavBrightness(private val navView: FrameLayout) {
             }
             MotionEvent.ACTION_UP -> {
                 clearMessages()
+                if (trackingTouch == true) {
+                    speedTracker.addMotionEvent(event)
+                    val speedYScale = speedTracker.getNormalizedSpeedY().coerceIn(0.2f, 5f)
+                    if (speedYScale >= TOGGLE_AUTO_BRIGHTNESS_SPEED) {
+                        handler.sendEmptyMessage(MSG_TOGGLE_AUTO_BRIGHTNESS)
+                    }
+                }
                 speedTracker.reset()
             }
         }
@@ -153,6 +174,7 @@ class NavBrightness(private val navView: FrameLayout) {
 
         private val recyclePool = ArrayDeque<MotionPoint>()
         private val pointList = ArrayDeque<MotionPoint>()
+        private val outSpeed = arrayOf(0f, 0f)
 
         fun addMotionEvent(event: MotionEvent) {
             pointList.addLast((recyclePool.removeLastOrNull() ?: MotionPoint()).apply {
@@ -167,10 +189,27 @@ class NavBrightness(private val navView: FrameLayout) {
         }
 
         fun getSpeedX(): Float {
+            getSpeed(outSpeed)
+            return outSpeed[0]
+        }
+
+        fun getNormalizedSpeedY(): Float {
+            return getSpeedY() / NORMALIZE_FACTOR
+        }
+
+        fun getSpeedY(): Float {
+            getSpeed(outSpeed)
+            return outSpeed[1]
+        }
+
+        fun getSpeed(outSpeed: Array<Float>) {
+            outSpeed[0] = 0f
+            outSpeed[1] = 0f
             val now = SystemClock.uptimeMillis()
             var startIndex = -1
             var endIndex = -1
-            var distance = 0f
+            var distanceX = 0f
+            var distanceY = 0f
             // calculate recent moving distance
             pointList.forEachIndexed { index, point ->
                 if (now - point.time > TRACK_TIME) {
@@ -185,7 +224,8 @@ class NavBrightness(private val navView: FrameLayout) {
                     endIndex = index
                     return@forEachIndexed
                 }
-                distance += (nextInfo.x - point.x).absoluteValue
+                distanceX += (nextInfo.x - point.x).absoluteValue
+                distanceY += (nextInfo.y - point.y).absoluteValue
             }
             val startPoint = pointList.getOrNull(startIndex)
             val endPoint = pointList.getOrNull(endIndex)
@@ -194,10 +234,12 @@ class NavBrightness(private val navView: FrameLayout) {
                 reset(startIndex)
             }
             if (startPoint == null || endPoint == null || startPoint == endPoint) {
-                return 0f
+                return
             }
             // calculate speed
-            return distance / (endPoint.time - startPoint.time).coerceAtLeast(1)
+            val time = (endPoint.time - startPoint.time).coerceAtLeast(1)
+            outSpeed[0] = distanceX / time
+            outSpeed[1] = distanceY / time
         }
 
         fun reset(clearSize: Int = pointList.size) {
