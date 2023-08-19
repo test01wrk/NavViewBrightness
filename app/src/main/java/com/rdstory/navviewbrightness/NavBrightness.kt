@@ -14,6 +14,7 @@ import android.widget.FrameLayout
 import de.robv.android.xposed.XposedHelpers
 import kotlin.math.abs
 import kotlin.math.absoluteValue
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
@@ -51,11 +52,16 @@ class NavBrightness(private val navView: FrameLayout) {
                         // unable to adjust auto brightness yet
                         return@run
                     }
-                    val adj = (msg.obj as Float).coerceIn(-1f, 1f)
+                    val gamma = ((0.02 * lastBrightness + 1.4).pow(2.8) / 50).coerceIn(0.01, 100.0)
+                    val adj = (msg.obj as Float * gamma.toFloat()).coerceIn(-1f, 1f)
                     val newBrightness = (lastBrightness + (MAX_BRIGHTNESS - MIN_BRIGHTNESS) * adj)
                         .coerceIn(MIN_BRIGHTNESS, MAX_BRIGHTNESS)
                     val lastBrightnessInt = lastBrightness.roundToInt()
                     val newBrightnessInt = newBrightness.roundToInt()
+                    if (BuildConfig.DEBUG) {
+                        Log.i("NavBrightness", "adj=${adj}, gama=${gamma}, " +
+                                "new=${newBrightnessInt}, last=${lastBrightnessInt}")
+                    }
                     lastBrightness = newBrightness
                     if (lastBrightnessInt != newBrightnessInt) {
                         val resolver = navView.context.contentResolver
@@ -145,7 +151,7 @@ class NavBrightness(private val navView: FrameLayout) {
                 clearMessages()
                 if (trackingTouch == true) {
                     speedTracker.addMotionEvent(event)
-                    val speedYScale = speedTracker.getNormalizedSpeedY().coerceIn(0.2f, 5f)
+                    val speedYScale = speedTracker.getNormalizedSpeedY().coerceIn(0.2f, 10f)
                     if (speedYScale >= TOGGLE_AUTO_BRIGHTNESS_SPEED) {
                         handler.sendEmptyMessage(MSG_TOGGLE_AUTO_BRIGHTNESS)
                     }
