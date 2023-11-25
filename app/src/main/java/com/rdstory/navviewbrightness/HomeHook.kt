@@ -28,24 +28,26 @@ object HomeHook {
             })
         }
 
-        // hide gesture line in landscape
-        XposedHelpers.findAndHookMethod(
-            "com.miui.home.recents.NavStubView",
-            lpparam.classLoader,
-            "getHotSpaceHeight",
-            object : XC_MethodHook() {
-                private var hideLine = 0
-                private var wasLandscape = false
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val context = (param.thisObject as View).context
-                    val isLandscape = XposedHelpers.callMethod(
-                        param.thisObject, "isLandScapeActually") as Boolean
-                    if (!wasLandscape && !isLandscape) {
-                        hideLine = Settings.Global.getInt(context.contentResolver, "hide_gesture_line", 0)
+        if (BuildConfig.DEBUG) {
+            // hide gesture line in landscape
+            XposedHelpers.findAndHookMethod(
+                "com.miui.home.recents.NavStubView",
+                lpparam.classLoader,
+                "getHotSpaceHeight",
+                object : XC_MethodHook() {
+                    private var hideLine = 0
+                    private var wasLandscape = false
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val context = (param.thisObject as View).context
+                        val isLandscape = XposedHelpers.callMethod(
+                            param.thisObject, "isLandScapeActually") as Boolean
+                        if (!wasLandscape && !isLandscape) {
+                            hideLine = Settings.Global.getInt(context.contentResolver, "hide_gesture_line", 0)
+                        }
+                        wasLandscape = isLandscape
+                        Settings.Global.putInt(context.contentResolver, "hide_gesture_line", if (isLandscape) 1 else hideLine)
                     }
-                    wasLandscape = isLandscape
-                    Settings.Global.putInt(context.contentResolver, "hide_gesture_line", if (isLandscape) 1 else hideLine)
-                }
-            })
+                })
+        }
     }
 }
