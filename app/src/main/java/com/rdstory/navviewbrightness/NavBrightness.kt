@@ -6,16 +6,15 @@ import android.os.Looper
 import android.os.Message
 import android.os.SystemClock
 import android.provider.Settings.System.*
-import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import android.widget.FrameLayout
+import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import kotlin.math.abs
 import kotlin.math.absoluteValue
 import kotlin.math.pow
-import kotlin.math.roundToInt
 
 /**
  * Control brightness using MIUIHome app's NavStubView that located at the bottom of the screen.
@@ -28,14 +27,18 @@ class NavBrightness(private val navView: FrameLayout) {
         private const val MSG_ADJUST_BRIGHTNESS = 1
         private const val MSG_CHECK_START_TRACKING = 2
         private const val MSG_TOGGLE_AUTO_BRIGHTNESS = 3
+        private const val MSG_SET_BRIGHTNESS = 4
         private const val ACTIVE_TIMEOUT = 500L
-        private const val MAX_BRIGHTNESS = 4095f
-        private const val MIN_BRIGHTNESS = 1f
         private const val TOGGLE_AUTO_BRIGHTNESS_SPEED = 2f
+
+        private const val TRACKING_TOUCH_ABORT = 0
+        private const val TRACKING_TOUCH_X = 1
+        private const val TRACKING_TOUCH_Y = 2
+        private const val TRACKING_TOUCH_DETECTING = 3
     }
 
     private val touchSlop = ViewConfiguration.get(navView.context).scaledTouchSlop
-    private var trackingTouch: Boolean? = null
+    private var trackingTouch: Number? = null
     private var initX = 0f
     private var initY = 0f
     private var lastX = 0f
@@ -47,25 +50,22 @@ class NavBrightness(private val navView: FrameLayout) {
     private val handler = object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
             when (msg.what) {
-                MSG_ADJUST_BRIGHTNESS -> run {
-                    if (brightnessMode != SCREEN_BRIGHTNESS_MODE_MANUAL) {
-                        // unable to adjust auto brightness yet
-                        return@run
-                    }
-                    val gamma = ((0.02 * lastBrightness + 1.4).pow(2.8) / 50).coerceIn(0.01, 100.0)
-                    val adj = (msg.obj as Float * gamma.toFloat()).coerceIn(-1f, 1f)
-                    val newBrightness = (lastBrightness + (MAX_BRIGHTNESS - MIN_BRIGHTNESS) * adj)
-                        .coerceIn(MIN_BRIGHTNESS, MAX_BRIGHTNESS)
-                    val lastBrightnessInt = lastBrightness.roundToInt()
-                    val newBrightnessInt = newBrightness.roundToInt()
+                MSG_SET_BRIGHTNESS -> {
+                    val resolver = navView.context.contentResolver
+                    putFloat(resolver, SystemUIHook.BRIDGE_BRIGHTNESS, lastBrightness)
+                }
+                MSG_ADJUST_BRIGHTNESS -> {
+                    val gamma = (30 * ((lastBrightness + 0.35).pow(2) - 0.115)).coerceIn(0.1, 50.0)
+                    val adj = ((msg.obj as Float) * gamma.toFloat()).coerceIn(-1f, 1f)
+                    val newBrightness = (lastBrightness + adj).coerceIn(0f, 1f)
                     if (BuildConfig.DEBUG) {
-                        Log.i("NavBrightness", "adj=${adj}, gama=${gamma}, " +
-                                "new=${newBrightnessInt}, last=${lastBrightnessInt}")
+                        XposedBridge.log("[$TAG] adj=${adj}, gama=${gamma}, " +
+                                "new=${newBrightness}, last=${lastBrightness}")
                     }
-                    lastBrightness = newBrightness
-                    if (lastBrightnessInt != newBrightnessInt) {
+                    if (lastBrightness != newBrightness) {
+                        lastBrightness = newBrightness
                         val resolver = navView.context.contentResolver
-                        putInt(resolver, SCREEN_BRIGHTNESS, newBrightnessInt)
+                        putFloat(resolver, SystemUIHook.BRIDGE_BRIGHTNESS_TMP, newBrightness)
                     }
                 }
                 MSG_CHECK_START_TRACKING -> checkStartTracking()
@@ -96,18 +96,17 @@ class NavBrightness(private val navView: FrameLayout) {
         if (trackingTouch != null) {
             return
         }
-        if (SystemClock.uptimeMillis() - initTime < ACTIVE_TIMEOUT) {
-            // user moved too soon, abort gesture detection
-            trackingTouch = false
-        } else if (XposedHelpers.getObjectField(navView, "mDownEvent") == null) {
+        if (XposedHelpers.getObjectField(navView, "mDownEvent") == null) {
             // A null mDownEvent means that NavStubView is not consuming touch event,
             // we don't want to break NavStubView's original functionality
             val resolver = navView.context.contentResolver
-            trackingTouch = true
             brightnessMode = getInt(resolver, SCREEN_BRIGHTNESS_MODE)
-            lastBrightness = getInt(resolver, SCREEN_BRIGHTNESS).toFloat()
+            lastBrightness = getFloat(resolver, SystemUIHook.BRIDGE_BRIGHTNESS)
             navView.performHapticFeedback(HapticFeedbackConstants.GESTURE_START)
-            Log.d(TAG, "start tracking brightness gesture")
+            trackingTouch = TRACKING_TOUCH_DETECTING
+            XposedBridge.log("[$TAG] start detecting brightness gesture")
+        } else {
+            trackingTouch = TRACKING_TOUCH_ABORT
         }
     }
 
@@ -132,24 +131,35 @@ class NavBrightness(private val navView: FrameLayout) {
                 handler.sendEmptyMessageDelayed(MSG_CHECK_START_TRACKING, ACTIVE_TIMEOUT)
             }
             MotionEvent.ACTION_MOVE -> {
-                if (trackingTouch == null && abs(event.y - initY) >= touchSlop) {
-                    trackingTouch = false
-                } else if (trackingTouch == null && abs(event.x - initX) >= touchSlop) {
-                    checkStartTracking()
+                val movingX = abs(event.x - initX) >= touchSlop
+                val movingY = abs(event.y - initY) >= touchSlop
+                if (
+                    trackingTouch == null && (movingX || movingY) &&
+                    SystemClock.uptimeMillis() - initTime < ACTIVE_TIMEOUT
+                ) {
+                    // user moved before long press take effect, abort gesture detection
+                    clearMessages()
+                    trackingTouch = TRACKING_TOUCH_ABORT
+                } else if (trackingTouch == TRACKING_TOUCH_DETECTING && (movingX || movingY)) {
+                    trackingTouch =  if (movingX) TRACKING_TOUCH_X else TRACKING_TOUCH_Y
                 }
-                if (trackingTouch == true) {
+                if (trackingTouch == TRACKING_TOUCH_X) {
                     speedTracker.addMotionEvent(event)
                     // calculate adjustment value, increase or decrease according to moving speed
                     val speedXScale = speedTracker.getNormalizedSpeedX().coerceIn(0.2f, 5f)
                     val adj = (event.x - lastX) / navView.width * speedXScale
                     handler.obtainMessage(MSG_ADJUST_BRIGHTNESS, adj).sendToTarget()
+                } else if (trackingTouch == TRACKING_TOUCH_Y) {
+                    speedTracker.addMotionEvent(event)
                 }
                 lastX = event.x
                 lastY = event.y
             }
             MotionEvent.ACTION_UP -> {
                 clearMessages()
-                if (trackingTouch == true) {
+                if (trackingTouch == TRACKING_TOUCH_X) {
+                    handler.obtainMessage(MSG_SET_BRIGHTNESS).sendToTarget()
+                } else if (trackingTouch == TRACKING_TOUCH_Y) {
                     speedTracker.addMotionEvent(event)
                     val speedYScale = speedTracker.getNormalizedSpeedY().coerceIn(0.2f, 10f)
                     if (speedYScale >= TOGGLE_AUTO_BRIGHTNESS_SPEED) {

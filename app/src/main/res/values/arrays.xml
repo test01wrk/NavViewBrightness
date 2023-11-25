@@ -2,5 +2,6 @@
 <resources>
     <array name="hook_scope">
         <item>com.miui.home</item>
+        <item>com.android.systemui</item>
     </array>
 </resources>
